@@ -39,7 +39,7 @@ class LegalOrderPartitioner(partitions: Int) extends Partitioner {
   }
 }
 
-object LegalOrder_1 {
+object LegalOrder {
   def bulkLoad(inputRDD: RDD[(ImmutableBytesWritable,KeyValue)],conf:Configuration,tableName:String,hFilePath:String) = {
     val fs: FileSystem = FileSystem.get(new Configuration)
     val path = new Path(hFilePath)
@@ -159,11 +159,11 @@ object LegalOrder_1 {
   }
 
   def main(args:Array[String]) {
-    val sparkConf = new SparkConf().setAppName("family_size_sunyu").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max", "192M")
+    val sparkConf = new SparkConf().setAppName("ssss").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max", "192M")
       .set("spark.driver.maxResultSize", "10G").set("spark.default.parallelism","1640").set("spark.sql.shuffle.partitions","1000").set("spark.buffer.pageSize","2M")
     val sc = new SparkContext(sparkConf)
     val conf = HBaseConfiguration.create()
-    val tableName ="dw_user"
+    val tableName ="user"
     conf.setInt("timeout", 120000)
     conf.set("hbase.zookeeper.quorum","*1,*2,*3")
     conf.set("hbase.zookeeper.property.clientPort", "2181")
