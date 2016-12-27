@@ -14,19 +14,19 @@ import org.apache.spark.{SparkConf, SparkContext}
 
 object HiveToHbase2 {
   def main(args:Array[String]): Unit = {
-    val sparkConf = new SparkConf().setAppName("toHBase_sunyu").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
-      .set("spark.hbase.host", "arch-od-data03.beta1.fn,arch-od-data04.beta1.fn,arch-od-data05.beta1.fn")
+    val sparkConf = new SparkConf().setAppName("yyy").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
+      .set("spark.hbase.host", "*1,*2,*3")
     val sc = new SparkContext(sparkConf)
     val sqlContext = new SQLContext(sc)
-    val member = sqlContext.read.parquet("hdfs://fhc/user/bd_recom/member_beta_sunyu.parquet")
-    val member_repartition = member.repartition(500, member("mem_guid"))
+    val member = sqlContext.read.parquet("*.parquet")
+    val member_repartition = member.repartition(500, member("m_id"))
     val names:Array[String] = member.schema.fieldNames
-    val columnFamily = "info"
+    val columnFamily = "ssss"
     val time = (DateTime.now - 1.day).millisOfDay().get()
-    val tableName = "bd_recom:dw_user"
+    val tableName = "xxx:user"
     val myConf = HBaseConfiguration.create()
-    myConf.addResource(new Path("/etc/hbase/conf/core-site.xml"))
-    myConf.addResource(new Path("/etc/hbase/conf/hbase-site.xml"))
+    myConf.addResource(new Path("core-site.xml"))
+    myConf.addResource(new Path("hbase-site.xml"))
     val rowSet = new mutable.HashSet[(Array[Byte], Array[(Array[Byte], Array[Byte], Array[Byte])])]()
     val dataRDD = member_repartition.mapPartitions( partition => {
       partition.foreach(row => {
@@ -60,7 +60,7 @@ object HiveToHbase2 {
       })
 
     member.unpersist()
-    println("finished")
+
     sc.stop()
   }
 }
