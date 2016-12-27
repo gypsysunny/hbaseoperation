@@ -1,0 +1,218 @@
+
+package com.userprofile
+
+import java.text.SimpleDateFormat
+import java.util.Date
+
+import com.codahale.jerkson.Json._
+import com.github.nscala_time.time.Imports._
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.hbase.client.{HBaseAdmin, HTable}
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable
+import org.apache.hadoop.hbase.mapreduce.{HFileOutputFormat2, LoadIncrementalHFiles, TableOutputFormat}
+import org.apache.hadoop.hbase.util.Bytes
+import org.apache.hadoop.hbase.{HBaseConfiguration, KeyValue}
+import org.apache.hadoop.mapreduce.Job
+import org.apache.spark._
+import org.apache.spark.rdd.RDD
+import org.apache.spark.serializer.JavaSerializer
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.storage.StorageLevel
+
+import scala.collection.mutable.{HashMap, MultiMap, Set}
+
+class LegalOrderPartitioner(partitions: Int) extends Partitioner {
+  require(partitions >= 0, s"Number of partitions ($partitions) cannot be negative.")
+
+  override def numPartitions: Int = partitions
+
+  override def getPartition(key: Any): Int = {
+    val k = key.asInstanceOf[String]
+    val code = (k.split(":")(0)).hashCode % numPartitions
+    if (code < 0) {
+      code + numPartitions
+    } else {
+      code
+    }
+  }
+}
+
+object LegalOrder_1 {
+  def bulkLoad(inputRDD: RDD[(ImmutableBytesWritable,KeyValue)],conf:Configuration,tableName:String,hFilePath:String) = {
+    val fs: FileSystem = FileSystem.get(new Configuration)
+    val path = new Path(hFilePath)
+    if(fs.exists(path)) {
+      fs.delete(path,true)
+    }
+    val table = new HTable(conf, tableName)
+    conf.set(TableOutputFormat.OUTPUT_TABLE, tableName)
+    conf.setInt("hbase.mapreduce.bulkload.max.hfiles.perRegion.perFamily",1024) // plays its specific role
+    val job = Job.getInstance(conf)
+    job.setMapOutputKeyClass (classOf[ImmutableBytesWritable])
+    job.setMapOutputValueClass (classOf[KeyValue])
+    HFileOutputFormat2.configureIncrementalLoad (job, table)
+    inputRDD.saveAsNewAPIHadoopFile(hFilePath,
+      classOf[ImmutableBytesWritable],
+      classOf[KeyValue],
+      classOf[HFileOutputFormat2],
+      job.getConfiguration()
+    )
+    val bulkLoader = new LoadIncrementalHFiles(conf)
+    bulkLoader.doBulkLoad(path, table)
+  }
+
+  def getTime(date:Date,format:String):String = {
+    val fm = new SimpleDateFormat(format)
+    fm.format(date)
+  }
+
+  class HashMapParam extends AccumulableParam[HashMap[String, Int], (String, Int)] {
+    def addAccumulator(acc: HashMap[String, Int], elem: (String, Int)): HashMap[String, Int] = {
+      val (k1, v1) = elem
+      acc += acc.find(_._1 == k1).map {
+        case (k2, v2) => k2 -> (v1 + v2)
+      }.getOrElse(elem)
+      acc
+    }
+
+    def addInPlace(acc1: HashMap[String, Int], acc2: HashMap[String, Int]): scala.collection.mutable.HashMap[String, Int] = {
+      acc2.foreach(elem => addAccumulator(acc1, elem))
+      acc1
+    }
+
+    def zero(initialValue: HashMap[String, Int]): HashMap[String, Int] = {
+      val ser = new JavaSerializer(new SparkConf(false)).newInstance()
+      val copy = ser.deserialize[HashMap[String, Int]](ser.serialize(initialValue))
+      copy.clear()
+      copy
+    }
+  }
+
+  def getLvl2Map(lvl2DF:DataFrame,time:String, sc:SparkContext) : RDD[(String,Int)]= {
+    val map = new scala.collection.mutable.HashMap[String,Int]()
+    val accumulator = sc.accumulable(map)(new HashMapParam)
+    lvl2DF.mapPartitions(elem => {
+      while(elem.hasNext) {
+        val entry = elem.next()
+        val memId = entry.getString(0)
+        if ( meet some conditions ) {
+          accumulator += (memId+":"+l_ID, 1)
+        }
+      }
+      map.iterator
+    })
+  }
+  def getLvl2Map(lvl2DF:DataFrame,time:String) : RDD[(String,Int)]= {
+    val map = new scala.collection.mutable.HashMap[String,Int]()
+    lvl2DF.mapPartitions(elem => {
+      while(elem.hasNext) {
+        val entry = elem.next()
+        val memId = entry.getString(0)
+        if (meet some conditions ) )) {
+          if(map.contains(memId+":"+l_ID)) {
+            val oldNum = map.get(memId+":"+l_ID)
+            map.put(memId+":"+l_ID, oldNum.getOrElse(0) + 1)
+          } else {
+            map.put(memId+":"+l_ID, 1)
+          }
+        }
+      }
+      map.iterator
+    })
+  }
+
+  def getStat(rdd:RDD[(String,Set[(String,Int)])]) : RDD[(String,String)]= {
+    val map = new scala.collection.mutable.HashMap[String, String]()
+    rdd.mapPartitions(elem => {
+      while(elem.hasNext) {
+        val entry = elem.next()
+        val memId = entry._1
+        val l_IDSet = entry._2
+        val l_Map = new scala.collection.mutable.HashMap[String,String]()
+        /*l_IDSet.foreach(e=>{
+          l_Map.put(e._1.trim,e._2.toString.trim)
+        })*/
+        for(kv <- l_IDSet) {
+          l_Map.put(kv._1,kv._2.toString)
+        }
+        map.put(memId,generate(l_Map))
+      }
+      map.iterator
+    })
+  }
+
+  def getMultiMap(rdd:RDD[(String,Int)]) : RDD[(String, Set[(String,Int)])]= {
+    val mMap = new HashMap[String, Set[(String,Int)]] with MultiMap[String, (String,Int)]
+    rdd.mapPartitions(partition => {
+      while(partition.hasNext) {
+        val record = partition.next()
+        val arr = record._1.split(":")
+        val memId = arr(0)
+        val lvl2ID = arr(1)
+        val num = record._2
+        mMap.addBinding(memId, (lvl2ID, num))
+      }
+      mMap.iterator
+    })
+  }
+
+  def main(args:Array[String]) {
+    val sparkConf = new SparkConf().setAppName("family_size_sunyu").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max", "192M")
+      .set("spark.driver.maxResultSize", "10G").set("spark.default.parallelism","1640").set("spark.sql.shuffle.partitions","1000").set("spark.buffer.pageSize","2M")
+    val sc = new SparkContext(sparkConf)
+    val conf = HBaseConfiguration.create()
+    val tableName ="dw_user"
+    conf.setInt("timeout", 120000)
+    conf.set("hbase.zookeeper.quorum","*1,*2,*3")
+    conf.set("hbase.zookeeper.property.clientPort", "2181")
+    val admin = new HBaseAdmin(conf)
+    if (!admin.isTableAvailable(tableName)) {
+      println("no table")
+    }
+    val hiveContext = new HiveContext(sc)
+    val timeFormat = "yyyy-MM-dd HH:mm:ss"
+    val twoYears = getTime((DateTime.now - 2.years).toDate,timeFormat)
+	
+    val resultDF = result1DF.unionAll(result2DF)
+    val rePartitionDF = resultDF.repartition(1000,resultDF("m_id"))
+    val mapRDD_twoYears = getLvl2Map(rePartitionDF,twoYears)
+    val level2Map_twoYears = mapRDD_twoYears.partitionBy(new LegalOrderPartitioner(1000))
+    mapRDD_twoYears.unpersist()
+	
+    val level2Multimap_twoYears = getMultiMap(level2Map_twoYears).persist(StorageLevel.MEMORY_AND_DISK)
+    level2Map_twoYears.unpersist()
+	
+    val rdd_twoYears = getStat(level2Multimap_twoYears).persist(StorageLevel.MEMORY_AND_DISK)
+    level2Multimap_twoYears.unpersist()
+
+    val level2Map_time_rdd = generateRDDForTime(rdd_twoYears,"info","testTime")
+    val level2Map_twoYears_rdd = generateRDD(rdd_twoYears,"info","test2Y")
+    rdd_twoYears.unpersist()
+
+    bulkLoad(level2Map_twoYears_rdd, conf, tableName,"/tmp/spark_order_1")
+    bulkLoad(level2Map_time_rdd,conf, tableName, "/tmp/spark_order_6")
+
+    level2Map_twoYears_rdd.unpersist()
+    level2Map_time_rdd.unpersist()
+
+    sc.stop()
+  }
+
+  def generateRDD(lvl2RDD: RDD[(String,String)], cf:String, quialifier:String):RDD[(ImmutableBytesWritable,KeyValue)] = {
+    lvl2RDD.sortByKey().map(row => {
+      val kv: KeyValue = new KeyValue(Bytes.toBytes(row._1), cf.getBytes(), quialifier.getBytes(), row._2.getBytes)
+      (new ImmutableBytesWritable(Bytes.toBytes(row._1)), kv)
+    })
+  }
+  def generateRDDForTime(lvl2RDD: RDD[(String,String)], cf:String,quialifier:String):RDD[(ImmutableBytesWritable,KeyValue)] = {
+    val timeFormat_CRM = "yyyyMMddHHmmss"
+    val currentDate = getTime(DateTime.now.toDate,timeFormat_CRM)
+    lvl2RDD.sortByKey().map(row => {
+      val memId = row._1
+      val kv: KeyValue = new KeyValue(Bytes.toBytes(memId), cf.getBytes(), quialifier.getBytes(), currentDate.getBytes)
+      (new ImmutableBytesWritable(Bytes.toBytes(memId)), kv)
+    })
+  }
+}
