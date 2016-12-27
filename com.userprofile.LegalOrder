@@ -90,7 +90,7 @@ object LegalOrder_1 {
     }
   }
 
-  def getLvl2Map(lvl2DF:DataFrame,time:String, sc:SparkContext) : RDD[(String,Int)]= {
+  def getLvl2Map(l_DF:DataFrame,time:String, sc:SparkContext) : RDD[(String,Int)]= {
     val map = new scala.collection.mutable.HashMap[String,Int]()
     val accumulator = sc.accumulable(map)(new HashMapParam)
     lvl2DF.mapPartitions(elem => {
@@ -104,7 +104,7 @@ object LegalOrder_1 {
       map.iterator
     })
   }
-  def getLvl2Map(lvl2DF:DataFrame,time:String) : RDD[(String,Int)]= {
+  def getLvl2Map(l_DF:DataFrame,time:String) : RDD[(String,Int)]= {
     val map = new scala.collection.mutable.HashMap[String,Int]()
     lvl2DF.mapPartitions(elem => {
       while(elem.hasNext) {
@@ -150,9 +150,9 @@ object LegalOrder_1 {
         val record = partition.next()
         val arr = record._1.split(":")
         val memId = arr(0)
-        val lvl2ID = arr(1)
+        val l_ID = arr(1)
         val num = record._2
-        mMap.addBinding(memId, (lvl2ID, num))
+        mMap.addBinding(memId, (l_ID, num))
       }
       mMap.iterator
     })
