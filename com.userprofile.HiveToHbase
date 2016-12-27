@@ -1,0 +1,66 @@
+package com.userprofile
+
+import java.nio.ByteBuffer
+import scala.collection.mutable
+import com.github.nscala_time.time.Imports._
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hbase.client.{Put, _}
+import org.apache.hadoop.hbase.spark.HBaseContext
+import org.apache.hadoop.hbase.spark.HBaseRDDFunctions._
+import org.apache.hadoop.hbase.util.Bytes
+import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.{SparkConf, SparkContext}
+
+object HiveToHbase2 {
+  def main(args:Array[String]): Unit = {
+    val sparkConf = new SparkConf().setAppName("toHBase_sunyu").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
+      .set("spark.hbase.host", "arch-od-data03.beta1.fn,arch-od-data04.beta1.fn,arch-od-data05.beta1.fn")
+    val sc = new SparkContext(sparkConf)
+    val sqlContext = new SQLContext(sc)
+    val member = sqlContext.read.parquet("hdfs://fhc/user/bd_recom/member_beta_sunyu.parquet")
+    val member_repartition = member.repartition(500, member("mem_guid"))
+    val names:Array[String] = member.schema.fieldNames
+    val columnFamily = "info"
+    val time = (DateTime.now - 1.day).millisOfDay().get()
+    val tableName = "bd_recom:dw_user"
+    val myConf = HBaseConfiguration.create()
+    myConf.addResource(new Path("/etc/hbase/conf/core-site.xml"))
+    myConf.addResource(new Path("/etc/hbase/conf/hbase-site.xml"))
+    val rowSet = new mutable.HashSet[(Array[Byte], Array[(Array[Byte], Array[Byte], Array[Byte])])]()
+    val dataRDD = member_repartition.mapPartitions( partition => {
+      partition.foreach(row => {
+        val rowkey = Bytes.toBytes(row.getString(0))
+        var rowList1 = List[(Array[Byte], Array[Byte], Array[Byte])]()
+        for(i<- 1 to names.length-1) {
+          val value = Option(row.get(i))
+          val bytes = ByteBuffer.wrap(value.getOrElse("").toString.getBytes())
+          val qualifier = names(i)
+          rowList1 = rowList1.::(columnFamily.getBytes, qualifier.getBytes, Bytes.toBytes(bytes))
+        }
+        rowSet.add((rowkey, rowList1.toArray))
+      })
+      rowSet.iterator
+    })
+
+    val hbaseContext = new HBaseContext(sc, myConf)
+    dataRDD.hbaseForeachPartition(hbaseContext,
+      (it, connection) => {
+        val mutatorParams = new BufferedMutatorParams(TableName.valueOf(tableName))
+        mutatorParams.writeBufferSize(4 * 1024 * 1024)
+        val mutator = connection.getBufferedMutator(mutatorParams)
+        it.foreach(r => {
+          val put = new Put(r._1)
+          r._2.foreach((putValue) =>
+            put.addColumn(putValue._1, putValue._2, time.toLong, putValue._3))
+          mutator.mutate(put)
+        })
+        mutator.flush()
+        mutator.close()
+      })
+
+    member.unpersist()
+    println("finished")
+    sc.stop()
+  }
+}
