@@ -12,7 +12,7 @@ import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.{SparkConf, SparkContext}
 
-object HiveToHbase {
+object HiveToHbase {//clouder 5.7.3 hbase 1.2版本
   def main(args:Array[String]): Unit = {
     val sparkConf = new SparkConf().setAppName("yyy").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
       .set("spark.hbase.host", "*1,*2,*3")
