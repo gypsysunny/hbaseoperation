@@ -118,6 +118,28 @@ object AppCount { //计算(key,value)按value排序的2种办法，见（1）（
     val appCountDF1 = appCountDF.sort(appCountDF("count").desc) // （2）按count的大小从大到小排序
     appCountDF.write.mode(SaveMode.Overwrite).parquet("hdfs://appCountDF.parquet")
     appCountDF.unpersist()
+    
+    
+    // 统计用户使用最多的手机品牌
+    val brandDF = hiveContext.sql("select brand from yy.xxxx").cache()
+    val brandMap = new mutable.HashMap[String, Int]()
+    val accumulatorBrand = sc.accumulable(brandMap)(new HashMapParam)
+    brandDF.foreachPartition(partition => {
+      while (partition.hasNext) {
+        val record = partition.next()
+        val brand = record.getString(0)
+        accumulatorBrand += (brand, 1)
+      }
+    })
+    val brandRDD = sc.parallelize(accumulatorBrand.value.toSeq)
+    implicit val brandNumOrder = new Ordering[(String,Int)]{
+      override def compare(a: (String,Int), b: (String,Int)) : Int = {
+        a._2.compare(b._2)
+      }
+    }
+    val rdd = brandRDD.sortBy(x=>x, false)
+    val mostlyUsedBrand = rdd.first()._1
+    
 
     sc.stop()
   }
