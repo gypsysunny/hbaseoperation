@@ -1,0 +1,125 @@
+package com.userprofile
+
+import de.ummels.prioritymap.PriorityMap
+import org.apache.spark.serializer.JavaSerializer
+import org.apache.spark.sql.{Row, SQLContext, SaveMode}
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.sql.types._
+import org.apache.spark.{AccumulableParam, SparkConf, SparkContext}
+
+import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
+/**
+  * Created by yu.sun on 2016/6/18.
+  */
+class ListBufferParam extends AccumulableParam[ListBuffer[Int], Int] {
+  def addAccumulator(acc: ListBuffer[Int], elem: Int): ListBuffer[Int] = {
+    acc.append(elem)
+    acc
+  }
+  def addInPlace(acc1: ListBuffer[Int], acc2: ListBuffer[Int]): ListBuffer[Int] = {
+    acc2.foreach(elem => addAccumulator(acc1, elem))
+    acc1
+  }
+  def zero(initialValue: ListBuffer[Int]): ListBuffer[Int] = {
+    val ser = new JavaSerializer(new SparkConf(false)).newInstance()
+    val copy = ser.deserialize[ListBuffer[Int]](ser.serialize(initialValue))
+    copy.isEmpty match {
+      case true => copy
+      case false => ListBuffer.empty[Int]
+    }
+  }
+}
+
+class HashMapParam extends AccumulableParam[HashMap[String, Int], (String, Int)] {
+  def addAccumulator(acc: HashMap[String, Int], elem: (String, Int)): HashMap[String, Int] = {
+    val (k1, v1) = elem
+    acc += acc.find(_._1 == k1).map {
+      case (k2, v2) => k2 -> (v1 + v2)
+    }.getOrElse(elem)
+
+    acc
+  }
+
+  def addInPlace(acc1: HashMap[String, Int], acc2: HashMap[String, Int]): scala.collection.mutable.HashMap[String, Int] = {
+    acc2.foreach(elem => addAccumulator(acc1, elem))
+    acc1
+  }
+
+  def zero(initialValue: HashMap[String, Int]): HashMap[String, Int] = {
+    val ser = new JavaSerializer(new SparkConf(false)).newInstance()
+    val copy = ser.deserialize[HashMap[String, Int]](ser.serialize(initialValue))
+    copy.clear()
+    copy
+  }
+}
+
+object AppCount { //计算(key,value)按value排序的2种办法，见（1）（2）
+  def main(args:Array[String]): Unit = {
+    val sparkConf = new SparkConf().setAppName("").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
+      .set("spark.driver.maxResultSize","4g").set("spark.yarn.executor.memoryOverhead","2560")
+    sparkConf.set("spark.cores.max", "16") // all the cores you can
+    sparkConf.set("spark.sql.tungsten.enabled", "true")
+    sparkConf.set("spark.eventLog.enabled", "true")
+    sparkConf.set("spark.io.compression.codec", "snappy")
+    sparkConf.set("spark.rdd.compress", "true")
+    val sc = new SparkContext(sparkConf)
+    val hiveContext = new HiveContext(sc)
+    val memSoftListDF1 = hiveContext.sql("select applist from xx.yyyy")
+    val memSoftListDF = memSoftListDF1.repartition(memSoftListDF1.rdd.getNumPartitions * 10)
+    val ord = Ordering.by[Int,Int](x => -x)
+    //注意此处PriorityMap的使用，可github或者google scala-prioritymap，注意TreeMap和prioritymap的区别，前者针对key排序，后者对value
+    //并注意Ordering的使用
+    var memSoftListMap = PriorityMap("" -> 0)(ord)// （1）按value的大小desc排序
+    val softListSize_list = new ListBuffer[Int]()
+    val softListNumListBuffer = new ListBuffer[Int]()
+    //在循环里使用List 要使用（var） list = list.::("str")，直接list.::("str")应该是生成了另外的list，所以这里使用了ListBuffer
+    val accumulatorSoftList = sc.accumulable(softListNumListBuffer)(new ListBufferParam())
+    val softListNumRDD = memSoftListDF.mapPartitions(partition=> {
+      while(partition.hasNext) {
+        val record = partition.next()
+        val softList = record.getString(0)
+        if(softList != null && softList.trim!="") {
+          val softListArr = softList.split(",")
+          softListSize_list.append(softListArr.length)
+          accumulatorSoftList += softListArr.length
+          for(elem <- softListArr) {
+            if (memSoftListMap.contains(elem)) {
+              val previousNum = memSoftListMap.get(elem).get
+              memSoftListMap = memSoftListMap + (elem -> (previousNum + 1))
+            } else {
+              memSoftListMap = memSoftListMap + (elem -> 1)
+            }
+          }
+        }
+      }
+      memSoftListMap.iterator
+    }).cache()
+    //此处softListSize_list为空，memSoftListMap也只有初始设置的""->0，说明如果要在mappartitions或foreachpartition里统计数据并存放到
+    //到map、list等数据结构里必须要用accumulator，具体可参考github上相关例子或者google accmulator HashParam
+    println("softListNumRDD="+softListNumRDD.count()+" "+memSoftListMap.size +" "+softListSize_list.size+" "+accumulatorSoftList.value.size)
+    val softListSizeList = accumulatorSoftList.value.result()
+    val avgNum = softListSizeList.sum / softListSizeList.size
+    val appCountSet = new mutable.LinkedHashSet[Row]() //必须用LinkedHashSet以保持prioritymap设置的desc顺序
+    val appCountRDD = softListNumRDD.mapPartitions( partition => {
+     // partition.foreach(e => {appCountSet.add(Row(e._1, e._2))})
+      while(partition.hasNext) {
+        val record = partition.next()
+        appCountSet.add(Row(record._1, record._2))
+      }
+      appCountSet.iterator
+    })
+    softListNumRDD.unpersist()
+    val sqlContext = new SQLContext(sc)
+    val softListStruct = new StructType(Array(StructField("app", StringType, nullable = false), StructField("count", IntegerType, nullable = true)))
+    val appCountDF = sqlContext.createDataFrame(appCountRDD, softListStruct).cache()
+    appCountRDD.unpersist()
+    appCountDF.show()
+    val appCountDF1 = appCountDF.sort(appCountDF("count").desc) // （2）按count的大小从大到小排序
+    appCountDF.write.mode(SaveMode.Overwrite).parquet("hdfs://appCountDF.parquet")
+    appCountDF.unpersist()
+
+    sc.stop()
+  }
+
+}
