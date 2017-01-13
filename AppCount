@@ -9,9 +9,11 @@ import org.apache.spark.{AccumulableParam, SparkConf, SparkContext}
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
-/**
-  * Created by yu.sun on 2016/6/18.
-  */
+
+/*
+   1）出现gc limited exceed要增大executor的内存
+   2）driver的内存一般不需要太大
+*/
 class ListBufferParam extends AccumulableParam[ListBuffer[Int], Int] {
   def addAccumulator(acc: ListBuffer[Int], elem: Int): ListBuffer[Int] = {
     acc.append(elem)
