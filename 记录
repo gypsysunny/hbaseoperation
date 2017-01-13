@@ -1,0 +1,20 @@
+
+disable 'dw_user' enable
+alter 'dw_user', METHOD => 'table_att_unset', NAME=> 'coprocessor$1' //删除observer
+//部署observer
+alter 'dw_user', METHOD => 'table_att', 'coprocessor' => 'observer-1.0-dwuser-SNAPSHOT.jar|com.userprofile.observer.DataSyncObserver|1001|es_type=dw_user,es_index=user_profile_index'
+
+curl -XGET http://ip:9200/user_profile_index/dw_user/_search?pretty=true
+ 
+curl -XDELETE  http://ip:9200/user_profile_index/
+ $ hbase zkcli
+zookeeper_cli> rmr /hbase/root-region-server
+hadoop fs -rmr /hbase/data/default/*/*/recovered.edits
+hadoop fs -rmr /hbase/WALs/*splitting
+
+create 'xx:yy', {NAME => "iiii"} , {NAME => "dddd"}, {NAME => "tag",IN_MEMORY =>"true", BLOOMFILTER =>"ROWCOL"},  {NUMREGIONS => 9, SPLITALGO => 'HexStringSplit'}
+
+hadoop fs -rmr  hdfs:/hbase/data/default/table/yyyy
+删除表  hbase:meta hdfs:/hbase/data/default/table
+zookeeper_cli  rmr /hbase/table 
+重启hbase
