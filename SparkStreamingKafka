@@ -1,0 +1,122 @@
+package com.userprofile
+
+import com.github.nscala_time.time.Imports._
+import kafka.serializer.StringDecoder
+import org.apache.hadoop.hbase.{HBaseConfiguration, TableName}
+import org.apache.hadoop.hbase.client.{HTable, Put}
+import org.apache.hadoop.hbase.util.Bytes
+import org.apache.spark.streaming.dstream.InputDStream
+import org.apache.spark.streaming.{Duration, Seconds, StreamingContext}
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.streaming.kafka.KafkaUtils
+/**
+  * Created by yu.sun on 2016/11/8.
+  */
+
+object SparkStreamingKafka { spark 1.6.2 hbase 0.98 该程序实时接收传到kafka的用户埋点数据（用户点击行为），收集用户点击首页推荐商品的记录
+  def main(args:Array[String]): Unit = {
+//    val zkQuorum = "1:2181,:2182,3:2183"
+//    val group = "1"
+    val topicsSet = Set("recommend_list")
+//    val topics = "recommend_list"
+//    val numThreads = 2
+    /*
+    spark.blockManager.port 38000
+spark.broadcast.port 38001
+spark.driver.port 38002
+spark.executor.port 38003
+spark.fileserver.port 38004
+spark.replClassServer.port 38005
+     */
+//    val topicpMap = topics.split(",").map((_,numThreads)).toMap
+    val sparkConf = new SparkConf().setAppName("kafka-spark-demo").set("dfs.client.failover.proxy.provider.mycluster","org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider")
+      .set("hive.exec.max.dynamic.partitions","100000")
+      .set("hive.exec.max.dynamic.partitions.pernode","100000")
+      .set("hive.exec.parallel","false")
+      .set("spark.blockManager.port","38000")
+      .set("spark.broadcast.port","38001")
+      .set("spark.driver.port","38002")
+      .set("spark.executor.port","38003")
+      .set("spark.fileserver.port","38004")
+      .set("spark.replClassServer.port","38005")
+      .set("yarn.scheduler.capacity.maximum-am-resource-percent","0.5")
+
+    val kafkaParam = Map( //#metadata.broker.list=
+      "metadata.broker.list" -> "ip11:9092,ip12:9092,ip13:9092,ip14:9092,ip15:9092" // kafka的broker list地址
+    )
+   /* val scc = new StreamingContext(sparkConf, Duration(5000))
+    scc.checkpoint(".") // 因为使用到了updateStateByKey,所以必须要设置checkpoint
+    val stream: InputDStream[(String, String)] = createStream(scc, kafkaParam, topicsSet)
+    stream.map(_._2)      // 取出value
+      .flatMap(_.split(":")) // 将字符串使用空格分隔
+      .map(r => (r, 1))      // 每个单词映射成一个pair
+      .updateStateByKey[Int](updateFunc)  // 用当前batch的数据区更新已有的数据
+      .print() // 打印前10个数据
+
+
+    scc.start() // 真正启动程序
+    scc.awaitTermination() //阻塞等待*/
+
+    val scc = new StreamingContext(sparkConf, Seconds(2))
+    scc.checkpoint(".")
+    val stream: InputDStream[(String, String)] = createStream(scc, kafkaParam, topicsSet)
+    val tableName="dw_user"
+    val smSeqDStream = stream.map(_._2)      // 取出value
+      .map(x => {
+          val strArr = x.split("::")
+          (strArr(0),strArr(1))
+        })
+    smSeqDStream.map(_._2)      // 取出value
+      .flatMap(_.split(":")) // 将字符串使用空格分隔
+      .map(r => (r, 1))      // 每个单词映射成一个pair
+      .updateStateByKey[Int](updateFunc)  // 用当前batch的数据区更新已有的数据
+      .print(20) // 打印前10个数据
+
+    smSeqDStream.foreachRDD(rdd =>{
+          val time = (DateTime.now - 1.day).millisOfDay().get()
+          rdd.foreachPartition {
+            partitionOfRecords => {
+              val myConf = HBaseConfiguration.create()
+              myConf.setInt("timeout", 120000)
+              myConf.set("hbase.zookeeper.quorum", "ip1,ip2,ip3")
+              myConf.set("hbase.zookeeper.property.clientPort", "2181")
+              myConf.set("hbase.defaults.for.version.skip", "true")
+              val myTable = new HTable(myConf, TableName.valueOf(tableName))
+              myTable.setAutoFlush(false, false)
+              myTable.setWriteBufferSize(1 * 1024)
+              partitionOfRecords.foreach {
+                record => {
+                  val p = new Put(Bytes.toBytes(record._1))
+                  val cf = "info"
+                  val qualifier = "recommend_list"
+                  p.add(cf.getBytes, qualifier.getBytes, time.toLong * 1000l, Bytes.toBytes(record._2))
+                  myTable.put(p)
+                }
+              }
+//              myTable.close()
+              myTable.flushCommits()
+            }
+         }
+     })
+
+    scc.start() // 真正启动程序
+    scc.awaitTermination() //阻塞等待
+  }
+  val updateFunc = (currentValues: Seq[Int], preValue: Option[Int]) => {
+    val curr = currentValues.sum
+    val pre = preValue.getOrElse(0)
+    Some(curr + pre)
+  }
+  /**
+    * 创建一个从kafka获取数据的流.
+    *
+    * @param scc           spark streaming上下文
+    * @param kafkaParam    kafka相关配置
+    * @param topics        需要消费的topic集合
+    * @return
+    */
+  def createStream(scc: StreamingContext, kafkaParam: Map[String, String], topics: Set[String]) = {
+    KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder](scc, kafkaParam, topics)
+  }
+
+}
