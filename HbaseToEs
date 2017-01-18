@@ -1,0 +1,110 @@
+package com.userprofile
+
+import java.io.Serializable
+
+import org.apache.hadoop.hbase.{Cell, HBaseConfiguration}
+import org.apache.hadoop.hbase.client.Result
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable
+import org.apache.hadoop.hbase.mapreduce.TableInputFormat
+import org.apache.spark.{HashPartitioner, RangePartitioner, SparkConf, SparkContext}
+import org.elasticsearch.spark.rdd.EsSpark
+import org.apache.spark.SparkContext._
+import org.apache.spark.sql.{SQLContext, SaveMode}
+import org.apache.spark.storage.StorageLevel
+import org.elasticsearch.spark.sql
+
+import scala.collection.immutable.HashMap
+import scala.collection.mutable.ListBuffer
+
+/**
+  * Created by yu.sun on 2016/8/5.
+  */
+
+object ColumnUtils extends Serializable {
+  def bytesToString(bytes:Option[Array[Byte]]):String = bytes match {
+    case Some(bytes) => new String(bytes)
+    case None => "test"
+  }
+  def bytesToDouble(bytes:Option[Array[Byte]]):Double = bytes match {
+    case Some(bytes) =>java.lang.Double.valueOf(new String(bytes))
+    case None => 0.00
+  }
+  def getDoubleColumn(value:Array[(ImmutableBytesWritable,Result)], i:Int, family:String, qualify:String): Double =  {
+    val cellValue = value(i - 1)._2.getValue(family.getBytes(), qualify.getBytes())
+    if(cellValue!=null && !cellValue.isEmpty) {
+      val bytes = Option(cellValue)
+      bytesToDouble(bytes)
+    } else {
+      0.00
+    }
+  }
+  def getStringColumn(value:Array[(ImmutableBytesWritable,Result)], i:Int, family:String, qualify:String): String =  {
+    val cellValue = value(i - 1)._2.getValue(family.getBytes(), qualify.getBytes())
+    if(cellValue!=null && !cellValue.isEmpty) {
+      val bytes = Option(cellValue)
+      bytesToString(bytes)
+    } else {
+      ""
+    }
+  }
+}
+
+object HbaseToES {//hbase版本0.98 spark版本1.6.2
+/*
+Another way is to make that method a function and assign it to a val. Then, the value of that val is inlined an therefore will not pull the whole instance into the serializable closure:
+val producerProps: (String,String,String) => Properties = ???
+ */
+  def main(args:Array[String]) {
+    val sparkConf = new SparkConf().setAppName("HBaseToES").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max", "1024M")
+      .set("spark.driver.maxResultSize","20g").set("spark.default.parallelism","1640")
+    //.set("spark.storage.memoryFraction", "0.6")
+    sparkConf.set("es.index.auto.create", "true")
+    val sc = new SparkContext(sparkConf)
+    val conf = HBaseConfiguration.create()
+    val tableName = "table1"
+    conf.setInt("timeout", 120000)
+    conf.set("hbase.zookeeper.quorum", "ip1,ip2,ip3")
+    conf.set("hbase.zookeeper.property.clientPort", "2181")
+    conf.set(TableInputFormat.INPUT_TABLE, tableName)
+    conf.set(TableInputFormat.SCAN_COLUMNS, "xx:yy cc:dd")
+    val hBaseRDD = sc.newAPIHadoopRDD(conf, classOf[TableInputFormat], classOf[ImmutableBytesWritable], classOf[Result])
+    //val hBaseRDD_cache= hBaseRDD.keyBy(_._1).partitionBy(new HashPartitioner(3000)).persist(StorageLevel.MEMORY_AND_DISK)
+    println("getNumPartitions="+hBaseRDD.getNumPartitions)
+    val rangePartitioner = new RangePartitioner(hBaseRDD.getNumPartitions*3, hBaseRDD)
+   // val hashPartitioner = new HashPartitioner(1000)
+    val hBaseRDD_cache= hBaseRDD.partitionBy(rangePartitioner).persist(StorageLevel.MEMORY_AND_DISK)
+    //val hBaseRDD_cache= hBaseRDD.map(pair=>(pair._1,pair)).partitionBy(new HashPartitioner(3000)).persist(StorageLevel.MEMORY_AND_DISK)
+    case class Member1(rkey: String, yy:String) extends Serializable //成员变量不能超过23个，所以分为5个case class
+    case class Member2(rkey: String, yy:String) extends Serializable
+    case class Member2(rkey: String, yy:String) extends Serializable
+    
+    case class Tag1(rkey: String, ff:String) extends Serializable
+    case class Tag2(rkey: String, ff:String) extends Serializable
+    
+    val seq1 = ListBuffer[Member1]()
+    val rdd1 = hBaseRDD_cache.mapPartitions( partition => {     
+      val value = partition.toArray
+      for (index <- 1 to value.length) {
+        val rs1 = value(index - 1)._1
+        val rkey = new String(rs1.copyBytes())
+         seq1.append( Member1(rkey, ColumnUtils.getStringColumn(value, index, "xx", "yy"),))
+      }
+      seq1.iterator
+    }
+   ).persist(StorageLevel.MEMORY_AND_DISK)
+    EsSpark.saveToEs(rdd1, "user_profile_index/user",Map("es.nodes" -> "ip:9200"))
+    rdd1.unpersist()
+    System.gc()
+ 
+ 
+    //从es获取购物频次标签值
+    val esUrl = "ip:9200"//线上
+    val sqlContext2 = new SQLContext(sc)
+    val dwUserEsDF = sql.sqlContextFunctions(sqlContext2).esDF("user_profile_index/dw_user", Map("es.nodes" -> esUrl)).select("rkey", "purchase_frequency").persist(StorageLevel.MEMORY_AND_DISK)
+    val tagDF1 = dwUserEsDF.repartition(10000, dwUserEsDF("rkey")).persist(StorageLevel.MEMORY_AND_DISK)
+    val tagDF = tagDF1.filter(tagDF1("purchase_frequency").!==("null"))
+    tagDF.write.mode(SaveMode.Overwrite).parquet("hdfs://jjjj.parquet")
+
+    sc.stop()
+  }
+}
