@@ -1,0 +1,43 @@
+package com.userprofile
+
+import com.github.nscala_time.time.Imports._
+import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.{SparkConf, SparkContext}
+
+/**
+  */
+object CCBrandPrefer {
+  def main(args:Array[String]): Unit = {
+    val sparkConf = new SparkConf().setAppName("hiveOperation").set("spark.serializer", "org.apache.spark.serializer.KryoSerializer").set("spark.kryoserializer.buffer.max","192M")
+    val sc = new SparkContext(sparkConf)
+    val hiveContext = new HiveContext(sc)
+    val sixMonths = (DateTime.now - 6.months).toString.substring(0, 10)
+    val yesterday1 = (DateTime.now - 1.day).toString.substring(0, 10)
+    /*
+    3、 取top10品牌下各品牌的top10渠道中各渠道的top10档期
+select  a.* from (
+                  select 品牌,渠道,档期,count/sum/其它() as num row_number() over (partition by 品牌,渠道 order by num desc ) rank
+                   from table_name
+                   where 品牌,渠道 限制条件
+                   group by 品牌,渠道,档期
+          )a where a.rank<=10
+     */
+    var sqlStr="select mem_id, c_id, b_id, count(1) as num from 用户行为表 where dt> \'"+ sixMonths+"\'"
+    sqlStr+=" and dt< \'"+yesterday1 +"\'"
+    sqlStr+=" and track_name in ('4','5') and mem_id is not null and mem_id != '' and mem_id != 'null' and c_id is not null and c_id != '' and b_id is not null and b_id !='' group by mem_id,c_id,b_id"
+    val cc_brand_prefer = hiveContext.sql(sqlStr)
+    cc_brand_prefer.registerTempTable("cc_brand_prefer1")
+    val cc_brand_prefer2 = hiveContext.sql("select t.mem_id,t.c_id,t.b_id,t.num from (select *,row_number() over(partition by mem_id,c_id order by num desc) rank from cc_brand_prefer1) t where t.rank<=50 ") //and t.num > 3
+    cc_brand_prefer2.registerTempTable("cc_brand_prefer2")
+    val cc_brand_prefer3 = hiveContext.sql("select t1.mem_id,t1.c_id,t1.b_id,t1.num/t2.total as percent from cc_brand_prefer2 t1 join (select mem_id, sum(num) as total from cc_brand_prefer2 group by mem_id) t2 on t1.mem_id=t2.mem_id")
+
+    cc_brand_prefer3.write.mode(SaveMode.Overwrite).save("ccbrandprefer_online.parquet")
+    cc_brand_prefer3.show()
+    cc_brand_prefer.unpersist()
+    cc_brand_prefer2.unpersist()
+    cc_brand_prefer3.unpersist()
+
+    sc.stop()
+  }
+}
