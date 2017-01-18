@@ -48,3 +48,22 @@ public class KafkaServiceImpl implements KafkaService {
     }
 
 }
+
+
+  //将专享推荐的商品对应s_id导入kafka ,此段程序可放在controller里使用，
+    @Autowired
+    private KafkaService kafkaService;
+    
+    //kafka收集用户首页推荐sm_seq列表
+    public static final String KAFKA_TOPIC = "recommend_list";
+    public static final String KAFKA_MESSAGE_KEY = "1";
+    
+    StringBuilder sIdBuilder = new StringBuilder("");
+    smSeqBuilder.append(memId).append(":");
+    for (Item item : itemList) {
+        if (item != null) {
+            sIdBuilder.append(":").append(item.getId());
+        }
+    }
+    kafkaService.sendMessage(KAFKA_TOPIC, KAFKA_MESSAGE_KEY, sIdBuilder.toString());
+    LogBetter.instance(LOGGER).setLevel(LogLevel.INFO).setMsg("发送mem_id及其s_id列表到kafka: " + sIdBuilder.toString()).log();
