@@ -54,3 +54,21 @@
         </int-kafka:producer-configurations>
     </int-kafka:producer-context>
 </beans>
+
+
+//该段取自spring-context.xml, 自动获取beta preview online机器上的properties文件中的变量
+  <util:properties id="configPathConfig" location="classpath:config/config.properties"></util:properties>
+
+    <bean id="kafkaConfig"
+          class="org.springframework.beans.factory.config.PropertiesFactoryBean">
+        <property name="ignoreResourceNotFound" value="true"/>
+        <property name="locations">
+            <list>
+                <value>file:#{configPathConfig['config.file.path']}/kafkaConfig.properties</value>
+            </list>
+        </property>
+    </bean>
+//该句为config.properties中的内容，该文件在src/main/resources/config目录下
+config.file.path=/home/xxx/config
+//该句为online机器上kafkaConfig.properties的内容
+kafka.broker-list=ip11：9092,ip12：9092,ip13：9092,ip14：9092,ip15：9092
