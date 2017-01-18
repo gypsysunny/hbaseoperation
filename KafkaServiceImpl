@@ -1,0 +1,50 @@
+package com.feiniu.bigdata.recommend.web.service.impl;
+
+import com.feiniu.bigdata.recommend.web.service.KafkaService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+import org.springframework.integration.kafka.support.KafkaHeaders;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.stereotype.Service;
+
+/**
+ * Created by yu.sun on 2016/11/16.
+ */
+@Service("kafkaService")
+public class KafkaServiceImpl implements KafkaService {
+
+    @Autowired
+    @Qualifier("inputToKafka")
+    MessageChannel channel;
+
+    public void sendMessage(String topic, Object obj) {
+        channel.send(MessageBuilder.withPayload(obj)
+                .setHeader(KafkaHeaders.TOPIC,topic)
+                .build());
+    }
+
+    public void sendMessage(String topic,String key, Object obj) {
+        channel.send(MessageBuilder.withPayload(obj)
+                .setHeader(KafkaHeaders.MESSAGE_KEY, key)
+                .setHeader(KafkaHeaders.TOPIC,topic)
+                .build());
+    }
+
+    public static void main(String[] args) {
+        final ClassPathXmlApplicationContext ctx = new ClassPathXmlApplicationContext("classpath:spring/spring-kafka.xml");
+        ctx.start();
+        final MessageChannel channel = ctx.getBean("inputToKafka", MessageChannel.class);
+        for (int i = 0; i < 10000; i++) {
+            channel.send(MessageBuilder.withPayload("Message:" + i).setHeader("messageKey", String.valueOf(i)).setHeader("topic", "recommend_list").build());
+        }
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        ctx.close();
+    }
+
+}
