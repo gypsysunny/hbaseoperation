@@ -18,3 +18,6 @@ hadoop fs -rmr  hdfs:/hbase/data/default/table/yyyy
 删除表  hbase:meta hdfs:/hbase/data/default/table
 zookeeper_cli  rmr /hbase/table 
 重启hbase
+
+
+http://colah.github.io/
